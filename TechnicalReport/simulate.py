@@ -378,7 +378,7 @@ class Agent:
         """Progress the infection states according to the time spent and random draws."""
         if self.state == "S":
             if self.exposure > 0:
-                raw_prob = ALPHA * (self.exposure / 288.0)
+                raw_prob = ALPHA * math.log(1 + self.exposure / 288.0)
                 probability = max(0, min(1, raw_prob))
             else:
                 probability = 0
@@ -448,7 +448,7 @@ class Agent:
         importance = 5
         self.memorize(description, day, importance)
 
-        print(f"Agent {self.agent_id} summary: {description}")
+        # print(f"Agent {self.agent_id} summary: {description}")
 
         # Clear daily interactions for the next day
         self.daily_interactions = []
@@ -649,9 +649,14 @@ stats_records = []
 # -------------------------------------------------------------------------------------------
 # Main Simulation Loop
 # -------------------------------------------------------------------------------------------
-for day in range(NUM_DAYS):
+from tqdm import tqdm  # Added import for tqdm
+
+# -------------------------------------------------------------------------------------------
+# Main Simulation Loop (with tqdm logging)
+# -------------------------------------------------------------------------------------------
+for day in tqdm(range(NUM_DAYS), desc="Simulation Days"):
     # Each tick, group agents by location
-    for tick in range(TICKS_PER_DAY):
+    for tick in tqdm(range(TICKS_PER_DAY), desc="Ticks", leave=False):
         locations_dict = defaultdict(list)
 
         # Group agents by current location
@@ -739,9 +744,9 @@ for day in range(NUM_DAYS):
 
     # Reflection & Planning using LLM
     for agent in agents:
-        print(f"Agent {agent.agent_id} is reflecting...")
+        # print(f"Agent {agent.agent_id} is reflecting...")
         agent.reflect(day)
-        print(f"Agent {agent.agent_id} is planning...")
+        # print(f"Agent {agent.agent_id} is planning...")
         agent.plan()
 
     # Print daily stats
