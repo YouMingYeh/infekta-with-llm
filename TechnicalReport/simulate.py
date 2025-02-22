@@ -56,9 +56,9 @@ STATES = {
 
 # Behavior effect multipliers
 BEHAVIORS = {
-    "wearings_mask": 0.1,
+    "wearing_mask": 0.1,
     "maintaining_social_distance": 0.3,
-    "self_isolating": 0,
+    "self_isolating": 0.0,
 }
 
 # Mean contact values for each location type
@@ -105,68 +105,64 @@ class News(BaseModel):
 # -------------------------------------------------------------------------------------------
 # LLM Integration Functions
 # -------------------------------------------------------------------------------------------
-def generate_beliefs(memories: list[Memory]) -> Beliefs:
+def generate_beliefs(memories: list[Memory], persona: str) -> Beliefs:
     """
-    Calls the local LLM (via ollama) to generate beliefs based on recent memories.
-    Expects valid JSON matching the Beliefs schema in the response.
+    Uses the LLM to generate beliefs based on recent memories and the agent's persona.
     """
-    # Convert memories to JSON for easier ingestion by the model
     memories_json = json.dumps(
         [m.model_dump() for m in memories], ensure_ascii=False, indent=2
     )
 
-    # Instruct the model to return valid JSON
+    prompt = (
+        f"You are an introspective and analytical agent with the following persona: '{persona}'. "
+        "Reflect on your recent experiences described in the JSON below and generate a set of beliefs that capture both your emotional reactions and rational assessments of the day's events. "
+        "Consider how the events (e.g., interactions, observations related to public health issues like COVID) affect your perception of risk and what lessons you might learn for your future behavior. "
+        "Return valid JSON strictly matching this schema:\n\n"
+        f"{Beliefs.model_json_schema()}\n\n"
+        "Do not include any extraneous keys or commentary."
+    )
+
     response = chat(
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant that ALWAYS returns valid JSON. "
-                    "The JSON must strictly match this pydantic schema:\n\n"
-                    f"{Beliefs.model_json_schema()}\n\n"
-                    "If needed, return an empty array for beliefs, but do NOT include extraneous keys. "
-                ),
-            },
+            {"role": "system", "content": prompt},
             {
                 "role": "user",
                 "content": f"Generate beliefs based on these memories:\n{memories_json}",
             },
         ],
         model="llama3.2:1b",
-        # If your version of ollama supports a 'format' parameter, keep it; otherwise remove it
         format=Beliefs.model_json_schema(),
     )
 
-    # Attempt to parse the JSON from the LLM
     try:
         beliefs = Beliefs.model_validate_json(response.message.content)
     except Exception as e:
         print("Error parsing LLM response for generate_beliefs:", e)
-        # Fallback to empty beliefs if parsing fails
         beliefs = Beliefs(beliefs=[])
     return beliefs
 
 
-def generate_behavior(beliefs: list[Belief]) -> Behavior:
+def generate_behavior(beliefs: list[Belief], persona: str) -> Behavior:
     """
-    Calls the local LLM (via ollama) to generate a Behavior object based on a list of beliefs.
+    Uses the LLM to generate a daily behavior plan based on current beliefs and the agent's persona.
     """
-    # Convert beliefs to JSON for easier ingestion
     beliefs_json = json.dumps(
         [b.model_dump() for b in beliefs], ensure_ascii=False, indent=2
     )
 
+    prompt = (
+        f"You are an agent with the following persona: '{persona}'. "
+        "Based on your current beliefs (provided in JSON format below), please determine your behavior for the day. "
+        "Consider the ongoing public health situation (such as the dynamics of COVID-19), the news you have heard, and your personal risk tolerance. "
+        "Decide whether to wear a mask, maintain social distance, or self-isolate. "
+        "Return valid JSON strictly matching the schema below:\n\n"
+        f"{Behavior.model_json_schema()}\n\n"
+        "Do not include any extra keys or commentary."
+    )
+
     response = chat(
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant that ALWAYS returns valid JSON. "
-                    "The JSON must strictly match this pydantic schema:\n\n"
-                    f"{Behavior.model_json_schema()}\n\n"
-                    "If needed, use false for booleans, but do NOT include extraneous keys."
-                ),
-            },
+            {"role": "system", "content": prompt},
             {
                 "role": "user",
                 "content": f"Generate behavior based on these beliefs:\n{beliefs_json}",
@@ -180,7 +176,6 @@ def generate_behavior(beliefs: list[Belief]) -> Behavior:
         behavior = Behavior.model_validate_json(response.message.content)
     except Exception as e:
         print("Error parsing LLM response for generate_behavior:", e)
-        # Fallback if parsing fails
         behavior = Behavior(
             wearing_mask=False, maintaining_social_distance=False, self_isolating=False
         )
@@ -189,19 +184,20 @@ def generate_behavior(beliefs: list[Belief]) -> Behavior:
 
 def generate_news(information: str) -> str:
     """
-    Calls the local LLM (via ollama) to generate a headline string based on the given 'information'.
+    Uses the LLM to generate a news headline based on the current public health context and epidemic stats.
     """
+    prompt = (
+        "You are a seasoned news reporter specializing in public health crises. "
+        "Based on the following information about today's epidemic status (e.g., new infections, deaths, changes over previous days), "
+        "generate a concise news headline that captures both the factual situation and the public sentiment. "
+        "Return your response as valid JSON matching the schema below:\n\n"
+        f"{News.model_json_schema()}\n\n"
+        "Use only the key 'headline' in your response."
+    )
+
     response = chat(
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant that returns a single news headline in JSON. "
-                    "The JSON must match this schema:\n\n"
-                    f"{News.model_json_schema()}\n\n"
-                    "Use the key 'headline' only."
-                ),
-            },
+            {"role": "system", "content": prompt},
             {
                 "role": "user",
                 "content": f"Generate a news headline based on this info: '{information}'",
@@ -217,22 +213,6 @@ def generate_news(information: str) -> str:
     except Exception as e:
         print("Error parsing LLM response for generate_news:", e)
         return "No new updates"
-
-
-# %%
-# Test LLM stubs (Optional)
-# Uncomment if you want to test them outside of the main simulation
-"""
-memories_test = [Memory(description="I saw a person coughing", day=1, importance=1)]
-beliefs_test = generate_beliefs(memories_test)
-print("Sample Beliefs from LLM:", beliefs_test)
-
-behavior_test = generate_behavior(beliefs_test.beliefs)
-print("Sample Behavior from LLM:", behavior_test)
-
-news_test = generate_news("The number of new infections has doubled in two days.")
-print("Sample News from LLM:", news_test)
-"""
 
 
 # %%
@@ -324,14 +304,14 @@ class Agent:
         def exposure_increase(a1, a2, tick):
             exposure_score = 1.0
             if a1.behavior.wearing_mask:
-                exposure_score *= BEHAVIORS["wearings_mask"]
+                exposure_score *= BEHAVIORS["wearing_mask"]
             if a1.behavior.maintaining_social_distance:
                 exposure_score *= BEHAVIORS["maintaining_social_distance"]
             if a1.behavior.self_isolating:
                 exposure_score *= BEHAVIORS["self_isolating"]
 
             if a2.behavior.wearing_mask:
-                exposure_score *= BEHAVIORS["wearings_mask"]
+                exposure_score *= BEHAVIORS["wearing_mask"]
             if a2.behavior.maintaining_social_distance:
                 exposure_score *= BEHAVIORS["maintaining_social_distance"]
             if a2.behavior.self_isolating:
@@ -350,12 +330,17 @@ class Agent:
     def update_state(self):
         """Progress the infection states according to the time spent and random draws."""
         if self.state == "S":
-            probability = (
-                ALPHA * math.log(self.exposure / 288.0) if self.exposure > 0 else 0
-            )
+            # -- 修正這裡的機率計算 --
+            if self.exposure > 0:
+                raw_prob = ALPHA * (self.exposure / 288.0)
+                probability = max(0, min(1, raw_prob))
+            else:
+                probability = 0
+
             if random.random() < probability:
                 self.state = "E"
                 self.days_in_state = 0
+
         elif self.state == "E":
             if self.days_in_state >= TIME_PERIODS["E"]:
                 if random.random() < BETA:
@@ -363,6 +348,7 @@ class Agent:
                 else:
                     self.state = "IS"
                 self.days_in_state = 0
+
         elif self.state == "IA":
             if self.days_in_state >= TIME_PERIODS["IA"]:
                 if random.random() < GAMMA:
@@ -370,6 +356,7 @@ class Agent:
                 else:
                     self.state = "R"
                 self.days_in_state = 0
+
         elif self.state == "IS":
             if self.days_in_state >= TIME_PERIODS["IS"]:
                 if random.random() < THETA:
@@ -377,6 +364,7 @@ class Agent:
                 else:
                     self.state = "R"
                 self.days_in_state = 0
+
         elif self.state == "IC":
             if self.days_in_state >= TIME_PERIODS["IC"]:
                 if random.random() < PHI:
@@ -384,6 +372,7 @@ class Agent:
                 else:
                     self.state = "R"
                 self.days_in_state = 0
+
         elif self.state == "R":
             if self.days_in_state >= TIME_PERIODS["R"]:
                 if random.random() < OMEGA:
@@ -424,42 +413,28 @@ class Agent:
         importance = 5
         self.memorize(description, day, importance)
 
-        # Probability to pass info on the next day
-        pass_probability = 0.5
-        if random.random() < pass_probability:
-            self.received_information.append((information, day))
+        # 把最新的資訊加入 received_information
+        self.received_information.append((information, day))
 
     def memorize(self, description, day, importance):
         memory = Memory(description=description, day=day, importance=importance)
         self.memories.append(memory)
 
     def reflect(self, day):
-        """Use LLM to transform recent memories into beliefs (with a probability check)."""
+        # Only reflect on last 1~2 days' memories
         recent_memories = [m for m in self.memories if m.day >= day - 1]
         if not recent_memories:
             self.beliefs = []
             return
-
-        # Only run LLM with a certain probability
         if random.random() < LLM_INFERENCE_PROB:
-            beliefs_obj = generate_beliefs(recent_memories)
+            beliefs_obj = generate_beliefs(recent_memories, self.persona)
             self.beliefs = beliefs_obj.beliefs
-        else:
-            # Possibly keep old beliefs or default to empty if you prefer
-            # self.beliefs = []
-            pass
 
     def plan(self):
-        """Use LLM to generate or update daily behavior from beliefs (with a probability check)."""
         if not self.beliefs:
             return
-
-        # Only run LLM with a certain probability
         if random.random() < LLM_INFERENCE_PROB:
-            self.behavior = generate_behavior(self.beliefs)
-        else:
-            # Keep the existing behavior
-            pass
+            self.behavior = generate_behavior(self.beliefs, self.persona)
 
 
 # %%
@@ -609,6 +584,9 @@ for agent_db in agents_db:
     )
     agents.append(agent)
 
+# 建立一個快取字典，查詢 agent 效率更好
+agent_lookup = {a.agent_id: a for a in agents}
+
 # Initialize some agents as infected
 initial_infected = random.sample(agents, k=10)
 for agent in initial_infected:
@@ -670,7 +648,6 @@ for day in range(NUM_DAYS):
         )
 
         # Run the LLM to produce a headline with a probability
-        headline = None
         if random.random() < LLM_INFERENCE_PROB:
             headline = generate_news(
                 f"Today, new infections: {num_infected}, yesterday: {prev_infected}, "
@@ -688,21 +665,24 @@ for day in range(NUM_DAYS):
 
     # Agents pass info to neighbors
     for agent in agents:
+        # 新的清單，保留尚未過期的資訊
+        new_info_list = []
         for information, info_day in agent.received_information:
-            if day - info_day > 7:
-                # Forget info older than 7 days
-                agent.received_information.remove((information, info_day))
-                continue
-            pass_probability = INFORMATION_PROB
-            for neighbor_id in agent.network_neighbors:
-                if random.random() < pass_probability:
-                    neighbor_agent = next(
-                        (x for x in agents if x.agent_id == neighbor_id), None
-                    )
-                    if neighbor_agent:
-                        neighbor_agent.receive_information(information, day)
-        # Clear after passing
-        agent.received_information = []
+            # 若此資訊尚未超過 7 天，就散播給鄰居，並保留在新的清單中
+            if (day - info_day) <= 7:
+                # 散播資訊
+                pass_probability = INFORMATION_PROB
+                for neighbor_id in agent.network_neighbors:
+                    if random.random() < pass_probability:
+                        neighbor_agent = agent_lookup.get(neighbor_id, None)
+                        if neighbor_agent:
+                            neighbor_agent.receive_information(information, day)
+
+                # 保留這條資訊供未來繼續傳播
+                new_info_list.append((information, info_day))
+
+        # 更新 agent 的 received_information
+        agent.received_information = new_info_list
 
     # Update infection states
     for agent in agents:
