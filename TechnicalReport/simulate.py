@@ -9,6 +9,10 @@ from collections import defaultdict
 import math
 import json
 
+# For concurrency-based timeout
+import concurrent.futures
+from concurrent.futures import TimeoutError
+
 # If you're using the local "ollama" Python library
 from ollama import chat
 
@@ -71,6 +75,8 @@ mean_contact_values = {
     "Terminal": 3,
 }
 
+MODEL = "llama3.2"
+
 
 # %%
 # -------------------------------------------------------------------------------------------
@@ -103,11 +109,27 @@ class News(BaseModel):
 
 # %%
 # -------------------------------------------------------------------------------------------
-# LLM Integration Functions
+# Concurrency Helper for Timeouts
+# -------------------------------------------------------------------------------------------
+def call_with_timeout(func, timeout=20, *args, **kwargs):
+    """
+    Runs 'func(*args, **kwargs)' in a separate thread and enforces a 'timeout' in seconds.
+    Returns the function's return value if it finishes on time,
+    or raises a TimeoutError if it doesn't.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        return future.result(timeout=timeout)
+
+
+# %%
+# -------------------------------------------------------------------------------------------
+# LLM Integration Functions (with Timeout)
 # -------------------------------------------------------------------------------------------
 def generate_beliefs(memories: list[Memory], persona: str) -> Beliefs:
     """
-    Uses the LLM to generate beliefs based on recent memories and the agent's persona.
+    Uses the LLM to generate beliefs based on recent memories and the agent's persona,
+    enforcing a timeout to avoid hanging.
     """
     memories_json = json.dumps(
         [m.model_dump() for m in memories], ensure_ascii=False, indent=2
@@ -122,17 +144,24 @@ def generate_beliefs(memories: list[Memory], persona: str) -> Beliefs:
         "Do not include any extraneous keys or commentary."
     )
 
-    response = chat(
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": f"Generate beliefs based on these memories:\n{memories_json}",
-            },
-        ],
-        model="llama3.2:1b",
-        format=Beliefs.model_json_schema(),
-    )
+    def _call_llm():
+        return chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": f"Generate beliefs based on these memories:\n{memories_json}",
+                },
+            ],
+            model=MODEL,
+            format=Beliefs.model_json_schema(),
+        )
+
+    try:
+        response = call_with_timeout(_call_llm, timeout=20)
+    except TimeoutError:
+        print("LLM call timed out in generate_beliefs; returning empty beliefs.")
+        return Beliefs(beliefs=[])
 
     try:
         beliefs = Beliefs.model_validate_json(response.message.content)
@@ -144,7 +173,8 @@ def generate_beliefs(memories: list[Memory], persona: str) -> Beliefs:
 
 def generate_behavior(beliefs: list[Belief], persona: str) -> Behavior:
     """
-    Uses the LLM to generate a daily behavior plan based on current beliefs and the agent's persona.
+    Uses the LLM to generate a daily behavior plan based on current beliefs and persona,
+    enforcing a timeout to avoid hanging.
     """
     beliefs_json = json.dumps(
         [b.model_dump() for b in beliefs], ensure_ascii=False, indent=2
@@ -160,17 +190,26 @@ def generate_behavior(beliefs: list[Belief], persona: str) -> Behavior:
         "Do not include any extra keys or commentary."
     )
 
-    response = chat(
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": f"Generate behavior based on these beliefs:\n{beliefs_json}",
-            },
-        ],
-        model="llama3.2:1b",
-        format=Behavior.model_json_schema(),
-    )
+    def _call_llm():
+        return chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": f"Generate behavior based on these beliefs:\n{beliefs_json}",
+                },
+            ],
+            model=MODEL,
+            format=Behavior.model_json_schema(),
+        )
+
+    try:
+        response = call_with_timeout(_call_llm, timeout=20)
+    except TimeoutError:
+        print("LLM call timed out in generate_behavior; returning default Behavior.")
+        return Behavior(
+            wearing_mask=False, maintaining_social_distance=False, self_isolating=False
+        )
 
     try:
         behavior = Behavior.model_validate_json(response.message.content)
@@ -184,7 +223,8 @@ def generate_behavior(beliefs: list[Belief], persona: str) -> Behavior:
 
 def generate_news(information: str) -> str:
     """
-    Uses the LLM to generate a news headline based on the current public health context and epidemic stats.
+    Uses the LLM to generate a news headline based on the current public health context,
+    enforcing a timeout to avoid hanging.
     """
     prompt = (
         "You are a seasoned news reporter specializing in public health crises. "
@@ -195,17 +235,24 @@ def generate_news(information: str) -> str:
         "Use only the key 'headline' in your response."
     )
 
-    response = chat(
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": f"Generate a news headline based on this info: '{information}'",
-            },
-        ],
-        model="llama3.2:1b",
-        format=News.model_json_schema(),
-    )
+    def _call_llm():
+        return chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": f"Generate a news headline based on this info: '{information}'",
+                },
+            ],
+            model=MODEL,
+            format=News.model_json_schema(),
+        )
+
+    try:
+        response = call_with_timeout(_call_llm, timeout=20)
+    except TimeoutError:
+        print("LLM call timed out in generate_news; returning 'No new updates'.")
+        return "No new updates"
 
     try:
         news_obj = News.model_validate_json(response.message.content)
@@ -330,7 +377,6 @@ class Agent:
     def update_state(self):
         """Progress the infection states according to the time spent and random draws."""
         if self.state == "S":
-            # -- 修正這裡的機率計算 --
             if self.exposure > 0:
                 raw_prob = ALPHA * (self.exposure / 288.0)
                 probability = max(0, min(1, raw_prob))
@@ -413,7 +459,7 @@ class Agent:
         importance = 5
         self.memorize(description, day, importance)
 
-        # 把最新的資訊加入 received_information
+        # Add latest info to received_information
         self.received_information.append((information, day))
 
     def memorize(self, description, day, importance):
@@ -421,8 +467,9 @@ class Agent:
         self.memories.append(memory)
 
     def reflect(self, day):
-        # Only reflect on last 1~2 days' memories
-        recent_memories = [m for m in self.memories if m.day >= day - 1]
+        # Reflect on the last 10 memories, regardless of day
+        recent_memories = self.memories[-10:]
+
         if not recent_memories:
             self.beliefs = []
             return
@@ -431,10 +478,13 @@ class Agent:
             self.beliefs = beliefs_obj.beliefs
 
     def plan(self):
+        # Use the last 3 beliefs to generate a behavior plan
+        recent_beliefs = self.beliefs[:3]
+
         if not self.beliefs:
             return
         if random.random() < LLM_INFERENCE_PROB:
-            self.behavior = generate_behavior(self.beliefs, self.persona)
+            self.behavior = generate_behavior(recent_beliefs, self.persona)
 
 
 # %%
@@ -584,7 +634,7 @@ for agent_db in agents_db:
     )
     agents.append(agent)
 
-# 建立一個快取字典，查詢 agent 效率更好
+# Build a lookup dict for agent_id -> Agent object
 agent_lookup = {a.agent_id: a for a in agents}
 
 # Initialize some agents as infected
@@ -665,12 +715,11 @@ for day in range(NUM_DAYS):
 
     # Agents pass info to neighbors
     for agent in agents:
-        # 新的清單，保留尚未過期的資訊
+        # new list to keep unexpired info
         new_info_list = []
         for information, info_day in agent.received_information:
-            # 若此資訊尚未超過 7 天，就散播給鄰居，並保留在新的清單中
+            # If not older than 7 days, we spread it
             if (day - info_day) <= 7:
-                # 散播資訊
                 pass_probability = INFORMATION_PROB
                 for neighbor_id in agent.network_neighbors:
                     if random.random() < pass_probability:
@@ -678,10 +727,10 @@ for day in range(NUM_DAYS):
                         if neighbor_agent:
                             neighbor_agent.receive_information(information, day)
 
-                # 保留這條資訊供未來繼續傳播
+                # Keep this info for future days
                 new_info_list.append((information, info_day))
 
-        # 更新 agent 的 received_information
+        # Update agent's info
         agent.received_information = new_info_list
 
     # Update infection states
