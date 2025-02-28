@@ -75,7 +75,7 @@ mean_contact_values = {
     "Terminal": 3,
 }
 
-MODEL = "llama3.2"
+MODEL = "llama3.2:1b"
 
 
 # %%
@@ -795,5 +795,3 @@ nx.draw_networkx_edges(G_final, pos, alpha=0.1)
 plt.title("Agent Network Visualization")
 plt.axis("off")
 plt.show()
-
-# %%
